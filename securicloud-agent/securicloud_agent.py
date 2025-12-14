@@ -12,8 +12,8 @@ from pathlib import Path
 import urllib.parse
 
 DEBUG = os.getenv("SECURICLOUD_AGENT_DEBUG", "false").lower() == "true"
-TUNNEL_HOST = "securicloud.me"
-TUNNEL_PORT = 5001
+TUNNEL_HOST = "tunnel.securicloud.me"
+TUNNEL_PORT = 443
 
 REDIRECT_PORT = 8099  # ingress will forward to this
 
