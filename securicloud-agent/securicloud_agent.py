@@ -2,6 +2,7 @@ import contextlib
 import os
 import secrets
 import ssl
+import time
 import requests
 import asyncio
 import json
@@ -12,10 +13,8 @@ from pathlib import Path
 import urllib.parse
 
 DEBUG = os.getenv("SECURICLOUD_AGENT_DEBUG", "false").lower() == "true"
-TUNNEL_HOST = "securicloud.me"
-TUNNEL_PORT = 5001
-# TUNNEL_HOST = "tunnel.securicloud.me"
-# TUNNEL_PORT = 443
+TUNNEL_HOST = ["securicloud.me", "5001", 0]
+BACKUP_TUNNEL_HOST = ["tunnel.securicloud.me", "443", 0]
 
 REDIRECT_PORT = 8099  # ingress will forward to this
 
@@ -217,14 +216,9 @@ async def keep_idle_connection(print_conn_logs):
     while not stopping.is_set():
         try:
             if print_conn_logs or DEBUG:
-                log(f"[IDLE] Connecting to {TUNNEL_HOST}:{TUNNEL_PORT}")
+                log(f"[IDLE] Connecting...")
 
-            r, w = await asyncio.open_connection(
-                TUNNEL_HOST,
-                int(TUNNEL_PORT),
-                ssl=ssl_ctx,
-                server_hostname=TUNNEL_HOST
-            )
+            r, w = await connect_to_host()
 
             ident = HA_INSTANCE_ID.encode()
             w.write(len(ident).to_bytes(2, "big"))
@@ -256,6 +250,31 @@ async def keep_idle_connection(print_conn_logs):
             log(f"[IDLE] Error: {e}, retrying in 3s")
             print_conn_logs = True
             await asyncio.sleep(3)
+
+async def connect_to_host():
+    for host in [TUNNEL_HOST, BACKUP_TUNNEL_HOST]:
+        if host[2] > time.perf_counter():
+            continue
+        for _ in range(2):
+            try:
+                r, w = await asyncio.wait_for(asyncio.open_connection(
+                            host[0],
+                            int(host[1]),
+                            ssl=ssl_ctx,
+                            server_hostname=host[0]
+                        ), 3)
+                host[2] = 0
+                return r, w
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+        else:
+            host[2] = time.perf_counter() + 600
+    
+    TUNNEL_HOST[2] = 0
+    BACKUP_TUNNEL_HOST[2] = 0
+    raise Exception("Unable to connect")
 
 
 # -----------------------------------------------------------------------------
