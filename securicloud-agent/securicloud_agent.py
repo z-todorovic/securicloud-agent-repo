@@ -2,6 +2,7 @@ import contextlib
 import os
 import secrets
 import ssl
+import struct
 import time
 import requests
 import asyncio
@@ -129,25 +130,27 @@ def get_ha_instance_id():
 
 
 # -----------------------------------------------------------------------------
-# TUNNEL CODE (unchanged)
+# TUNNEL CODE 
 # -----------------------------------------------------------------------------
 
 async def pipe_tunnel_to_ha(t_reader, t_writer, ha_writer, first_chunk):
     try:
-        length = int.from_bytes(first_chunk)
+        type = first_chunk[0]
+        length = (first_chunk[1] << 8) | first_chunk[2]
         while not stopping.is_set():
-            if length > 0:
-                d = await t_reader.readexactly(length)
-                ha_writer.write(d)
+            data = await t_reader.readexactly(length)
+            if length > 0 and type == 0:
+                ha_writer.write(data)
                 await ha_writer.drain()
 
             while not stopping.is_set():
                 try:
-                    b = await asyncio.wait_for(t_reader.readexactly(2), 5)
-                    length = int.from_bytes(b)
+                    b = await asyncio.wait_for(t_reader.readexactly(3), 5)
+                    type = b[0]
+                    length = (b[1] << 8) | b[2]
                     break
                 except asyncio.TimeoutError:
-                    t_writer.write(b"\x00\x00")
+                    t_writer.write(b"\x00\x00\x00")
                     await t_writer.drain()
 
     except asyncio.CancelledError:
@@ -165,11 +168,12 @@ async def pipe_tunnel_to_ha(t_reader, t_writer, ha_writer, first_chunk):
 async def pipe_ha_to_tunnel(ha_reader, t_writer):
     try:
         while not stopping.is_set():
-            d = await ha_reader.read(8192)
-            if not d:
+            data = await ha_reader.read(8192)
+            if not data:
                 break
-            t_writer.write(len(d).to_bytes(2, "big"))
-            t_writer.write(d)
+            header = struct.pack(">BH", 0, len(data))
+            t_writer.write(header)
+            t_writer.write(data)
             await t_writer.drain()
 
     except asyncio.CancelledError:
@@ -221,7 +225,8 @@ async def keep_idle_connection(print_conn_logs):
             r, w = await connect_to_host()
 
             ident = HA_INSTANCE_ID.encode()
-            w.write(len(ident).to_bytes(2, "big"))
+            header = struct.pack(">BH", 0, len(ident))
+            w.write(header)
             w.write(ident)
             await w.drain()
 
@@ -231,10 +236,10 @@ async def keep_idle_connection(print_conn_logs):
 
             while not stopping.is_set():
                 try:
-                    first_chunk = await asyncio.wait_for(r.readexactly(2), 5)
+                    first_chunk = await asyncio.wait_for(r.readexactly(3), 5)
                     break
                 except asyncio.TimeoutError:
-                    w.write(b"\x00\x00")
+                    w.write(b"\x00\x00\x00")
                     await w.drain()
 
             if not first_chunk or stopping.is_set():
