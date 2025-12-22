@@ -17,7 +17,7 @@ DEBUG = os.getenv("SECURICLOUD_AGENT_DEBUG", "false").lower() == "true"
 TUNNEL_HOST = ["securicloud.me", "5001", 0]
 BACKUP_TUNNEL_HOST = ["tunnel.securicloud.me", "443", 0]
 
-REDIRECT_PORT = 8099  # ingress will forward to this
+REDIRECT_PORT = 8099
 
 stopping = asyncio.Event()
 _live = set()
@@ -133,21 +133,18 @@ def get_ha_instance_id():
 # TUNNEL CODE 
 # -----------------------------------------------------------------------------
 
-async def pipe_tunnel_to_ha(t_reader, t_writer, ha_writer, first_chunk):
+async def pipe_tunnel_to_ha(t_reader, t_writer, ha_writer, header):
     try:
-        type = first_chunk[0]
-        length = (first_chunk[1] << 8) | first_chunk[2]
         while not stopping.is_set():
+            type, length = struct.unpack(">BH", header)
             data = await t_reader.readexactly(length)
-            if length > 0 and type == 0:
+            if type == 0:
                 ha_writer.write(data)
                 await ha_writer.drain()
 
             while not stopping.is_set():
                 try:
-                    b = await asyncio.wait_for(t_reader.readexactly(3), 5)
-                    type = b[0]
-                    length = (b[1] << 8) | b[2]
+                    header = await asyncio.wait_for(t_reader.readexactly(3), 5)
                     break
                 except asyncio.TimeoutError:
                     t_writer.write(b"\x00\x00\x00")
@@ -188,14 +185,14 @@ async def pipe_ha_to_tunnel(ha_reader, t_writer):
                 await t_writer.wait_closed()
 
 
-async def handle_active_connection(t_reader, t_writer, first_chunk):
+async def handle_active_connection(t_reader, t_writer, header):
     ha_reader = ha_writer = None
 
     try:
         debug("[FORWARD] Opening HA connection…")
         ha_reader, ha_writer = await asyncio.open_connection(LOCAL_HA[0], LOCAL_HA[1])
 
-        t1 = spawn(pipe_tunnel_to_ha(t_reader, t_writer, ha_writer, first_chunk))
+        t1 = spawn(pipe_tunnel_to_ha(t_reader, t_writer, ha_writer, header))
         t2 = spawn(pipe_ha_to_tunnel(ha_reader, t_writer))
 
         done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
@@ -237,6 +234,11 @@ async def keep_idle_connection(print_conn_logs):
             while not stopping.is_set():
                 try:
                     first_chunk = await asyncio.wait_for(r.readexactly(3), 5)
+                    type, length = struct.unpack(">BH", first_chunk)
+                    if type != 0:
+                        data = await r.readexactly(length)
+                        spawn(handleSpecialFrame(type, data))
+                        continue
                     break
                 except asyncio.TimeoutError:
                     w.write(b"\x00\x00\x00")
@@ -255,6 +257,14 @@ async def keep_idle_connection(print_conn_logs):
             log(f"[IDLE] Error: {e}, retrying in 3s")
             print_conn_logs = True
             await asyncio.sleep(3)
+
+
+async def handleSpecialFrame(type, data):
+    try:
+        if type == 1:
+            handle_notification(json.loads(data.decode("utf-8")))
+    except Exception:
+        pass
 
 async def connect_to_host():
     for host in [TUNNEL_HOST, BACKUP_TUNNEL_HOST]:
@@ -283,7 +293,7 @@ async def connect_to_host():
 
 
 # -----------------------------------------------------------------------------
-# INGRESS UI (polished)
+# INGRESS UI
 # -----------------------------------------------------------------------------
 
 class RedirectHandler(BaseHTTPRequestHandler):
@@ -548,6 +558,60 @@ async def main():
     spawn(keep_idle_connection(True))
 
     await asyncio.Event().wait()
+
+
+# -----------------------------------------------------------------------------
+# NOTIFICATIONS
+# -----------------------------------------------------------------------------
+
+HA_BASE = "http://supervisor/core"
+SUPERVISOR_TOKEN = os.environ["SUPERVISOR_TOKEN"]
+
+HEADERS = {
+    "Authorization": f"Bearer {SUPERVISOR_TOKEN}",
+    "Content-Type": "application/json",
+}
+
+def call_ha_service(domain: str, service: str, payload: dict):
+    url = f"{HA_BASE}/api/services/{domain}/{service}"
+    r = requests.post(url, json=payload, headers=HEADERS, timeout=5)
+    r.raise_for_status()
+
+
+def notify_persistent(title: str, message: str):
+    call_ha_service(
+        "persistent_notification",
+        "create",
+        {
+            "title": title,
+            "message": message,
+        },
+    )
+
+
+def notify_push(title: str, message: str):
+    call_ha_service(
+        "notify",
+        "notify",
+        {
+            "title": title,
+            "message": message,
+        },
+    )
+
+
+def handle_notification(msg: dict):
+    title = msg.get("title", "Securicloud")
+    message = msg.get("message")
+
+    if not message:
+        return
+
+    if msg.get("persistent"):
+        notify_persistent(title, message)
+
+    if msg.get("push"):
+        notify_push(title, message)
 
 
 # -----------------------------------------------------------------------------
