@@ -231,15 +231,15 @@ async def keep_idle_connection(print_conn_logs):
                 log("[IDLE] Connected. The service is running…")
             print_conn_logs = False
 
+            header = None
             while not stopping.is_set():
                 try:
                     header = await asyncio.wait_for(r.readexactly(3), 5)
-                    if header:
-                        type, length = struct.unpack(">BH", header)
-                        if type != 0:
-                            data = await r.readexactly(length)
-                            spawn(handleSpecialFrame(type, data))
-                            continue
+                    type, length = struct.unpack(">BH", header)
+                    if type != 0:
+                        data = await r.readexactly(length)
+                        spawn(handleSpecialFrame(type, data))
+                        continue
                     break
                 except asyncio.TimeoutError:
                     w.write(b"\x00\x00\x00")
