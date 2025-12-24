@@ -245,7 +245,7 @@ async def keep_idle_connection(print_conn_logs):
                     w.write(b"\x00\x00\x00")
                     await w.drain()
 
-            if not header or stopping.is_set():
+            if header is None or stopping.is_set():
                 w.close()
                 await asyncio.sleep(1)
                 continue
@@ -403,6 +403,16 @@ class RedirectHandler(BaseHTTPRequestHandler):
         A new Instance ID will be generated automatically
         after the add-on restarts.
       </p>
+
+      <hr>
+
+      <p>
+        After the reset process is complete, you must register this
+        Home Assistant installation again in Securicloud to restore
+        remote access.
+      </p>
+
+      <hr>
 
       <div class="d-flex justify-content-between mt-4">
         <button class="btn btn-secondary"
