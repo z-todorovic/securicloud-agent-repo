@@ -221,10 +221,10 @@ async def keep_idle_connection(print_conn_logs):
 
             r, w = await connect_to_host()
 
-            ident = HA_INSTANCE_ID.encode()
-            header = struct.pack(">BH", 0, len(ident))
-            w.write(header)
-            w.write(ident)
+            id = HA_INSTANCE_ID.encode()
+            h = struct.pack(">BH", 0, len(id))
+            w.write(h)
+            w.write(id)
             await w.drain()
 
             if print_conn_logs or DEBUG:
@@ -233,24 +233,25 @@ async def keep_idle_connection(print_conn_logs):
 
             while not stopping.is_set():
                 try:
-                    first_chunk = await asyncio.wait_for(r.readexactly(3), 5)
-                    type, length = struct.unpack(">BH", first_chunk)
-                    if type != 0:
-                        data = await r.readexactly(length)
-                        spawn(handleSpecialFrame(type, data))
-                        continue
+                    header = await asyncio.wait_for(r.readexactly(3), 5)
+                    if header:
+                        type, length = struct.unpack(">BH", header)
+                        if type != 0:
+                            data = await r.readexactly(length)
+                            spawn(handleSpecialFrame(type, data))
+                            continue
                     break
                 except asyncio.TimeoutError:
                     w.write(b"\x00\x00\x00")
                     await w.drain()
 
-            if not first_chunk or stopping.is_set():
+            if not header or stopping.is_set():
                 w.close()
                 await asyncio.sleep(1)
                 continue
 
             spawn(keep_idle_connection(False))
-            await handle_active_connection(r, w, first_chunk)
+            await handle_active_connection(r, w, header)
             break
 
         except Exception as e:
